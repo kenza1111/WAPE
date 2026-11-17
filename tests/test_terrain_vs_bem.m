@@ -44,7 +44,7 @@ for k = 1:size(ref.hills,1)
         IL_pe = L_hill - L_fl;
         IL_bem = squeeze(IL_bem_all(k,j,:)).';
         d = IL_pe - IL_bem;
-        ok = IL_bem > -30;                 % ignore deep interference nulls
+        ok = IL_bem > -30 & xr <= x(end);  % ignore deep interference nulls, stay inside the PE grid
         res(k,j) = sqrt(mean(d(ok).^2));
         printf('%s, z_r = %2d m: rms IL difference %.2f dB (BEM self-convergence %.2f dB)\n', ...
             ref.names{k}, z_r, res(k,j), sqrt(mean(squeeze(IL_bem_err(k,j,ok)).^2)));

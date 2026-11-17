@@ -98,7 +98,19 @@ test_slope_analytic        % uniform slopes vs exact image-source solution
 test_terrain_vs_bem        % hills vs an independent 2D boundary-element solution
 ```
 
-VALIDATION_RESULTS
+Results (Octave 8.4):
+
+| Case | Reference | Error |
+|---|---|---|
+| Flat ground | original solver | identical (0 difference) |
+| Uniform slope 5.7° / 11.3° / 16.7° | exact image solution | 0.10 / 0.21 / 0.33 dB rms outside interference nulls |
+| Hill, max slope 4.6° | BEM | 0.08–0.11 dB rms |
+| Hill, max slope 13.6° | BEM | 0.59–0.62 dB rms |
+| Hill, max slope 19.9° | BEM | 0.69–0.86 dB rms |
+
+The BEM reference (`tests/reference/bem_reference.mat`) was computed with λ/40 elements; the difference with λ/30 is 0.06–0.32 dB. To regenerate it: `make_bem_reference` (slow).
+
+<img src="/terrain_validation.png" width="800" />
 
 ### Limitations
 

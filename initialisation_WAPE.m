@@ -82,13 +82,13 @@ z = (0:nb_z-1)*delta_z;
 z = z';
 
 % x horizontal axis (m) [fixed values]
-x = 0:delta_x:dim_x;
+x = (0:nb_x-1)*delta_x;   % same as 0:delta_x:dim_x, guaranteed to have nb_x points
 
 stock_x = 0.5;                % spatial discretisation step along x, for saving data (m)
 stock_z = 0.5;                % spatial discretisation step along z, for saving data (m)
 
-z_r = 1.5;                       % receiver height for plotting (m)
-iz_r = round(z_r/stock_z); % index of receiver height in z vector
+z_r = 1.5;                       % receiver height above the local ground for plotting (m)
+iz_r = round(z_r/stock_z)+1; % index of receiver height in the interpolated zeta vector (zeta(1) = 0)
 
 %% Ground properties
 
@@ -102,23 +102,64 @@ sigmah = 0; %[0.01-0.05] (m)  % standard deviation of roughness height (ground r
 sigma = 1000;                                % airflow resistivity of the ground
 h = 0;                                       % thickness of ground surface layer (m), if h = 0 no layer
 
+% Mixed ground [variables]: ground_x(i) is the range (m) where segment i
+% starts, with airflow resistivity ground_sigma(i) and layer thickness
+% ground_h(i). A single segment starting at 0 is a homogeneous ground.
+ground_x = 0;
+ground_sigma = sigma;
+ground_h = h;
+% example: grass, then asphalt from 1000 m, then grass again from 2000 m
+% ground_x = [0 1000 2000]; ground_sigma = [200 20000 200]; ground_h = [0 0 0];
+
 % [fixed values]
 incidence = pi/2;             % wave incidence angle on the ground, pi/2 : incidence rasante
 
-%% Ground admittance calculation
+%% Terrain (topography) [variables]
+% Ground height profile along the propagation path, piecewise-linear between
+% the points (terrain.x, terrain.h), constant beyond them. The source is at
+% height hS above the ground at x = 0, receivers at z_r above the local
+% ground. Heights are in metres, any reference (e.g. altitude).
+% Valid for slopes up to about 15-20 deg (see README).
+terrain.x = [0 dim_x];        % profile abscissae (m)
+terrain.h = [0 0];            % ground height (m); [0 0] : flat ground
+terrain.smooth = 0;           % std of a Gaussian smoothing window (m), 0 : none
 
-[Beta]= Miki(freq,k0,sigma,h);
+% examples:
+% Gaussian hill, 40 m high, centred at 1500 m:
+%   terrain.x = 0:5:dim_x; terrain.h = 40*exp(-0.5*((terrain.x-1500)/150).^2);
+% profile read from a file with two columns (range, height), e.g. from a DEM:
+%   prof = load('profile.txt'); terrain.x = prof(:,1)'; terrain.h = prof(:,2)'; terrain.smooth = 10;
+
+[H,Hp,Hpf] = terrain_profile(terrain,x); % height, slope and half-step slope on the x grid
+
+if max(abs(Hpf)) > tand(20)
+    warning('WAPE:steep', ['Maximum terrain slope is %.1f deg. The terrain-following ' ...
+        'WAPE is validated up to about 20 deg; results on steeper slopes are less accurate.'], ...
+        atand(max(abs(Hpf))));
+end
+
+%% Ground admittance calculation
 
 % ground roughness effect on admittance
 [Beta_rough] = roughness(lc,sigmah,k0,incidence);
-Beta_eff = Beta + Beta_rough;
 
-% reflexion coefficient of ground
-Rp = (1-Beta_eff)/(1+Beta_eff);
+% admittance of each ground segment, then on each range column
+Beta_seg = zeros(1,numel(ground_x));
+for iseg = 1:numel(ground_x)
+    Beta_seg(iseg) = Miki(freq,k0,ground_sigma(iseg),ground_h(iseg)) + Beta_rough;
+end
+iseg_x = sum(x(:)' >= ground_x(:),1); % segment index of each range column
+Beta_eff = Beta_seg(iseg_x);          % 1 x nb_x
+
+% reflexion coefficient of ground at the source
+Rp = (1-Beta_eff(1))/(1+Beta_eff(1));
 
 %% Starting pressure field
 
-U0 = sourceSalomons_order2(z,hS,nb_z,k0,Rp); % using Salomons source function
+% the starter is defined perpendicular to the ground at the source (exact on
+% flat ground, needed when the terrain is sloping at x = 0)
+cG = 1/sqrt(1+Hp(1)^2);
+U0 = sourceSalomons_order2(z*cG,hS*cG,nb_z,k0,Rp); % using Salomons source function
 
 %% Wind profile
 
@@ -132,51 +173,49 @@ tau_bar1 = (Mx.*gamma_x.^2).*(sqrt(1+epsilon1) - Mx); % operator used in followi
 %% WAPE main calculation
 
 % calcul of velocity potential
-[Phi] = main(U0,gamma_x,tau_bar1,k0,delta_x,delta_z,nb_x,nb_z,epsilon0,epsilon1,Beta,haut_a,coeff_a);
+% calcul of velocity potential (column ix of Phi is at x(ix), column 1 is the starter)
+% The vertical axis z is the height above the local ground (terrain-following coordinates).
+[Phi] = main(U0,gamma_x,tau_bar1,k0,delta_x,delta_z,nb_x,nb_z,epsilon0,epsilon1,Beta_eff,haut_a,coeff_a,Hpf);
 
 %% Pressure calculation
 
-% the pressure is given from eq 84 of [Ostashev et al 2020]
-% we need phi(n-1), phi(n) and phi(n+1) to calculate p(n)
-n =  2 : size(Phi,2)-1;
-Phi_n_i = Phi(:,n);
-Phi_prv = Phi(:,n-1);
-Phi_nxt = Phi(:,n+1);
-x_pressure = x(n); % horizontal axis for pressure is shorter than x for phi (due to n-1, n and n+1 terms)
-
-% 2D pressure field -3dB when x = *2
-pp2D = zeros(nb_z,nb_x-1);
-pp2D(:,n) = abs(exp(1i*k0*x_pressure).* ((1-Mx).*Phi_n_i + (1i.*Mx./(2.*k0.*delta_x)).*(Phi_nxt- Phi_prv))); % (Pa)
+% the pressure is given from eq 84 of [Ostashev et al 2020], including the
+% terrain-following transformation (see pressure.m)
+pp2D = pressure(Phi,Mx,k0,delta_x,delta_z,x,Hp); % 2D pressure field -3dB when x = *2 (Pa)
 
 % 3D pressure field -6dB when x = *2
-pp3D = pp2D./sqrt(x(1:end-1));
+pp3D = pp2D./sqrt(x);
+pp3D(:,1) = NaN; % undefined at x = 0
 
 %% Interpolation (reduce size of matrices for saving)
 
-% interpolation on a grid delat_x,delta_z
+% interpolation on a grid stock_x, stock_z (z_pp is the height above the local ground)
 [L_phi2D,x_phi,z_phi] = interpolation(Phi,stock_x,stock_z,z,x);
-[L_pp2D,x_pp,z_pp] = interpolation(pp2D,stock_x,stock_z,z,x(1:end-1));
-[L_pp3D] = interpolation(pp3D,stock_x,stock_z,z,x(1:end-1));
+[L_pp2D,x_pp,z_pp] = interpolation(pp2D,stock_x,stock_z,z,x);
+[L_pp3D] = interpolation(pp3D,stock_x,stock_z,z,x);
+
+[xi,zi] = meshgrid(x_pp,z_pp); % xi & zi are used to avoid loop and calculate in matrix formalism
+H_pp = interp1(x,H,x_pp);      % terrain height on the interpolated grid
+zi_abs = zi + H_pp;            % absolute height of each point (m)
+zS_abs = H(1) + hS;            % absolute height of the source (m)
 
 %% Atmospheric absorption
 
-% according to ISO-9613
-L_pp2D = SetAtmos(L_pp2D,x_pp,z_pp,hS,freq,hr,T);
-L_pp3D = SetAtmos(L_pp3D,x_pp,z_pp,hS,freq,hr,T);
+% according to ISO-9613 (distances computed in absolute coordinates)
+L_pp2D = SetAtmos(L_pp2D,x_pp,z_pp,zS_abs,freq,hr,T,H_pp);
+L_pp3D = SetAtmos(L_pp3D,x_pp,z_pp,zS_abs,freq,hr,T,H_pp);
 
 %% Attenuation relative to free field level
 
-[xi,zi] = meshgrid(x_pp,z_pp); % xi & zi are used to avoid loop and calculate in matrix formalism
-
-R1 = sqrt(xi.^2 + (zi-hS).^2); % taking into account acoustic divergence
+R1 = sqrt(xi.^2 + (zi_abs-zS_abs).^2); % taking into account acoustic divergence
 DeltaL2D = L_pp2D + 20*log10(R1);
 DeltaL3D = DeltaL2D - 20*log10(sqrt(x_pp)); % correction 3D by sqrt(x)
 
 %% Atmospheric turbulence
 
 if f_turb_ind == true
-    DeltaL2D = fast_turb(DeltaL2D,xi,zi,hS,freq,gamT);
-    DeltaL3D = fast_turb(DeltaL3D,xi,zi,hS,freq,gamT);
+    DeltaL2D = fast_turb(DeltaL2D,xi,zi_abs,zS_abs,freq,gamT);
+    DeltaL3D = fast_turb(DeltaL3D,xi,zi_abs,zS_abs,freq,gamT);
 end
 
 %% Normalisation by maximum
@@ -197,10 +236,12 @@ save([num2str(freq) 'Hz_normalized_SPL.mat'],'L_pp3D');
 figure 
 
 subplot(2,1,1) % 2D(x,z) attenuation to free field map (dB)
-surf(xi,zi,DeltaL3D)
+surf(xi,zi_abs,DeltaL3D)
 view(2)
-shading interp     
+shading interp
 caxis([-30 20])
+hold on
+plot3(x_pp,H_pp,1e3*ones(size(x_pp)),'k','LineWidth',1.5) % terrain
 set(gca,'FontSize',12)
 xlabel('Range x (m)')
 ylabel('Height z (m)')
@@ -209,10 +250,12 @@ cb.Label.String = '\Delta L (dB)';
 title('Attenuation rel. to free field')
 
 subplot(2,1,2) % 2D(x,z) SPL (dB)
-surf(xi,zi,L_pp3D)
+surf(xi,zi_abs,L_pp3D)
 view(2)
-shading interp     
+shading interp
 caxis([-100 0])
+hold on
+plot3(x_pp,H_pp,1e3*ones(size(x_pp)),'k','LineWidth',1.5) % terrain
 set(gca,'FontSize',12)
 xlabel('Range x (m)')
 ylabel('Height z (m)')
@@ -233,7 +276,7 @@ set(gca,'TickLabelInterpreter','latex')
 xlabel('Range x (m)')
 ylabel('\Delta L (dB)')
 lgd = legend([num2str(freq) ' Hz']);
-title(['z mic = ' num2str(z_r) ' m'])
+title(['z mic = ' num2str(z_r) ' m above ground'])
 
 subplot(2,1,2)% SPL with distance (dB)
 hold all

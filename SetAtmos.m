@@ -14,12 +14,17 @@
 %  * See the Licence for the specific language governing permissions and limitations under the Licence.
 %  */
 
-function ppdBiAtmos = SetAtmos(ppdBi,x,z,haut,freq,hr,T)
+function ppdBiAtmos = SetAtmos(ppdBi,x,z,haut,freq,hr,T,Hx)
 % Apply atmospheric absorption to pressure field
+% Hx (optional): terrain height at x; z is then the height above the local
+% ground and haut the absolute source height.
 hr = hr*100;        % hr in percent
 
 % calculation of spatial grid from x z vectors
 [Xi,Zi] = meshgrid(x,z);
+if nargin >= 8
+    Zi = Zi + Hx(:)'; % absolute heights
+end
 
 xs = 0;
 zs = haut;

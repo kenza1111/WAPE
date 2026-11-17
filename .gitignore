@@ -1,0 +1,4 @@
+tests/slope_results.mat
+tests/bem_results.mat
+*_DeltaL.mat
+*_normalized_SPL.mat

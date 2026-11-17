@@ -54,6 +54,59 @@ sigma = 10000000;  % airflow resistivity of the ground (kN.s.m-4)
 h = 0;         % thickness of ground surface layer (m), if h = 0 no layer
 ```
 
+## Terrain (topography) and mixed ground
+
+The model can propagate over uneven terrain. The ground height profile along the propagation path is given in `initialisation_WAPE.m`:
+
+```Matlab
+%% Terrain (topography)
+terrain.x = [0 dim_x];   % profile abscissae (m)
+terrain.h = [0 0];       % ground height (m), piecewise-linear between points
+terrain.smooth = 0;      % std of a Gaussian smoothing window (m), 0 : none
+```
+
+The source is at `hS` above the ground at x = 0, receivers and plots use heights above the local ground (`z_r`), and the post-processing (free-field reference, atmospheric absorption, turbulence) uses absolute coordinates. The ground impedance can also change along the path:
+
+```Matlab
+ground_x = [0 1000 2000];            % start of each ground segment (m)
+ground_sigma = [200 20000 200];      % airflow resistivity of each segment
+ground_h = [0 0 0];                  % layer thickness of each segment (m)
+```
+
+### Method
+
+The equation is solved in terrain-following coordinates, zeta = z - H(x) being the height above the local ground [Sack & West 1995]. For a local slope s = H'(x) = tan(thetaG), the exact change of variables in the Helmholtz equation shows that the envelope w, defined by
+
+    phi = w * exp(i k0 sin(thetaG) zeta) * exp(i int k0 (sqrt(1+s^2) - 1) dx),
+
+obeys the flat-ground WAPE written in the frame aligned with the slope, i.e. with a marching step `delta_x*sqrt(1+s^2)` and a vertical step `delta_z/sqrt(1+s^2)`. Therefore:
+
+- the Crank-Nicholson matrices are the flat-ground ones built with these effective steps (they are cached and rebuilt only when the slope changes);
+- slope changes (terrain curvature) are applied as phase screens `exp(-i k0 d(sin thetaG) zeta)` before and after each step (Strang splitting). For small slopes this is the curvature term `eps_eff = eps - 2 zeta H''(x)` of the GT-PE [Sack & West 1995];
+- the ground boundary condition, the absorbing layer and the wind/temperature profiles (functions of the height above ground) are unchanged.
+
+For a uniform slope this is equivalent to a rotated PE [Collins 1990]; for flat ground it reduces exactly to the original solver.
+
+### Validation (`tests/`)
+
+Run from the repository root, in Matlab or Octave:
+
+```Matlab
+addpath tests tests/reference
+test_flat_regression       % flat ground: identical to the original solver
+test_slope_analytic        % uniform slopes vs exact image-source solution
+test_terrain_vs_bem        % hills vs an independent 2D boundary-element solution
+```
+
+VALIDATION_RESULTS
+
+### Limitations
+
+- Slopes up to about 15-20 deg (a warning is issued above 20 deg). The Pade(1,1) WAPE is limited to about 35 deg from the local slope direction, and the slope uses part of this aperture.
+- Steep or vertical features (cliffs, walls, buildings) and back-scattering are not modelled: couple the PE with a local FDTD/BEM model for those.
+- The wind is taken along x with the profile of the height above the local ground; flow speed-up over hills is not modelled (an x-dependent Mach profile from a flow model would be needed).
+- Terrain profiles from DEMs should be smoothed (`terrain.smooth`, e.g. a few wavelengths) to remove noise.
+
 ## Post-processing
 When the simulation has completed there will be 'DeltaL.mat' and  'normalized_SPL.mat' files which correspond respectively to attenuation to free field (dB), and sound pressure level field (dB) which is normalized by the maximum amplitude. You can post-process these signals to your liking. Here is an exemple of output:
 
